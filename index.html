@@ -42,7 +42,7 @@
     letter-spacing:0.03em;
     margin:0;
   }
-  .meta, .datefont{ font-family:'Space Mono', monospace; }
+  .meta{ font-family:'Space Mono', monospace; }
 
   .torn{
     position:relative;
@@ -75,25 +75,31 @@
   #adminPanel{
     position:fixed; top:64px; right:18px; z-index:1000;
     background:var(--paper); color:var(--ink);
-    padding:16px; width:230px;
+    padding:16px; width:260px;
     border:1px solid var(--ink);
     box-shadow:4px 4px 0 rgba(0,0,0,0.4);
     display:none;
     font-family:'Space Mono', monospace;
-    font-size:13px;
+    font-size:12.5px;
+    max-height:80vh; overflow-y:auto;
   }
   #adminPanel.open{ display:block; }
-  #adminPanel input[type="password"]{
-    width:100%; padding:8px; margin:8px 0;
-    border:1px solid var(--ink); background:#fff; font-family:'Space Mono', monospace;
+  #adminPanel input[type="password"], #adminPanel input[type="text"]{
+    width:100%; padding:8px; margin:6px 0;
+    border:1px solid var(--ink); background:#fff; font-family:'Space Mono', monospace; font-size:12.5px;
   }
   #adminPanel button{
     width:100%; padding:8px; background:var(--red); color:var(--paper);
-    border:none; font-family:'Space Mono', monospace; font-weight:700; cursor:pointer;
+    border:none; font-family:'Space Mono', monospace; font-weight:700; cursor:pointer; margin-top:4px;
   }
   #adminPanel button:hover{ background:var(--rust); }
+  #adminPanel button:disabled{ background:var(--grey); cursor:wait; }
   #adminPanel .status{ margin-top:8px; font-size:12px; }
   #adminPanel .status.err{ color:var(--red); }
+  #adminPanel .status.ok{ color:#2f6b3a; }
+  #adminPanel hr{ border:none; border-top:1px dashed var(--grey); margin:14px 0; }
+  #adminPanel .hint{ color:var(--grey); font-size:11px; margin-top:6px; }
+  #toolsView{ display:none; }
   .shake{ animation:shake 0.35s; }
   @keyframes shake{
     0%,100%{transform:translateX(0);}
@@ -231,6 +237,29 @@
 </head>
 <body>
 
+<!--
+  ============================================================
+  KONFIGURATION FÜR GITHUB-SPEICHERUNG
+  ============================================================
+  1. Lege ein GitHub-Repo an (z.B. "meine-band-seite"), lade diese
+     Datei dort als "index.html" hoch und aktiviere GitHub Pages
+     (Settings -> Pages -> Branch: main / Ordner: root).
+  2. Trage unten bei CONFIG deinen GitHub-Benutzernamen, den
+     Repo-Namen und den Branch ein (meist "main").
+  3. Erstelle ein Personal Access Token auf github.com unter
+     Settings -> Developer settings -> Fine-grained tokens,
+     beschränkt auf genau dieses Repo, Berechtigung
+     "Contents: Read and write".
+  4. Auf der Seite: ⋮-Button -> Code "chickendöner" eingeben ->
+     danach erscheint ein Feld für das Token -> Änderungen machen
+     -> "Speichern in GitHub" klicken.
+  Das Token wird NICHT gespeichert (kein localStorage) - du musst
+  es bei jedem neuen Bearbeitungs-Besuch erneut einfügen. Gib das
+  Token niemals an Dritte weiter und nutze ein Token, das nur für
+  dieses eine Repo gilt.
+  ============================================================
+-->
+
 <button id="adminToggle" title="Menü" aria-label="Menü öffnen">⋮</button>
 <div id="adminPanel">
   <div id="loginView">
@@ -238,6 +267,15 @@
     <input type="password" id="codeInput" placeholder="Code">
     <button id="codeSubmit">Bestätigen</button>
     <div class="status" id="loginStatus"></div>
+  </div>
+  <div id="toolsView">
+    <strong>GitHub-Speicherung</strong>
+    <input type="password" id="tokenInput" placeholder="GitHub Personal Access Token">
+    <button id="saveBtn">💾 Speichern in GitHub</button>
+    <div class="status" id="saveStatus"></div>
+    <div class="hint">Token wird nur für diese Sitzung im Speicher gehalten, nicht gespeichert.</div>
+    <hr>
+    <div class="hint">Repo: <span id="repoInfo"></span></div>
   </div>
 </div>
 <button id="lockBtn">🔒 Bearbeitung beenden</button>
@@ -381,31 +419,58 @@
 
 <script>
 (function(){
+  // ======================================================
+  // CONFIG — hier deine GitHub-Repo-Daten eintragen
+  // ======================================================
+  const CONFIG = {
+    owner: "DEIN-GITHUB-BENUTZERNAME",
+    repo: "DEIN-REPO-NAME",
+    branch: "main",
+    contentPath: "content.json"
+  };
+  // ======================================================
+
   const ADMIN_CODE = "chickendöner";
   const adminToggle = document.getElementById('adminToggle');
   const adminPanel = document.getElementById('adminPanel');
+  const loginView = document.getElementById('loginView');
+  const toolsView = document.getElementById('toolsView');
   const codeInput = document.getElementById('codeInput');
   const codeSubmit = document.getElementById('codeSubmit');
   const loginStatus = document.getElementById('loginStatus');
   const lockBtn = document.getElementById('lockBtn');
+  const tokenInput = document.getElementById('tokenInput');
+  const saveBtn = document.getElementById('saveBtn');
+  const saveStatus = document.getElementById('saveStatus');
+  const repoInfo = document.getElementById('repoInfo');
+
+  repoInfo.textContent = CONFIG.owner + "/" + CONFIG.repo + " (" + CONFIG.branch + ")";
+
+  let currentMedia = {};       // key -> pfad im repo, z.B. "assets/heroBg.jpg"
+  const pendingFiles = {};     // key -> File-Objekt, das beim Speichern hochgeladen wird
+
+  function normalize(s){ return s.trim().toLowerCase(); }
 
   adminToggle.addEventListener('click', () => {
     adminPanel.classList.toggle('open');
-    if(adminPanel.classList.contains('open')) codeInput.focus();
+    if(adminPanel.classList.contains('open') && !document.body.classList.contains('admin-mode')) codeInput.focus();
   });
-
-  function normalize(s){ return s.trim().toLowerCase(); }
 
   function unlock(){
     document.body.classList.add('admin-mode');
     document.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable','true'));
-    adminPanel.classList.remove('open');
+    loginView.style.display = 'none';
+    toolsView.style.display = 'block';
     loginStatus.textContent = '';
   }
 
   function lock(){
     document.body.classList.remove('admin-mode');
     document.querySelectorAll('[contenteditable]').forEach(el => el.setAttribute('contenteditable','false'));
+    adminPanel.classList.remove('open');
+    loginView.style.display = 'block';
+    toolsView.style.display = 'none';
+    codeInput.value = '';
   }
 
   codeSubmit.addEventListener('click', () => {
@@ -419,7 +484,6 @@
     }
   });
   codeInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') codeSubmit.click(); });
-
   lockBtn.addEventListener('click', lock);
 
   document.addEventListener('click', (e) => {
@@ -428,7 +492,7 @@
     }
   });
 
-  // ---- upload button wiring ----
+  // ---- upload button wiring (lokale Vorschau, Upload erfolgt erst beim Speichern) ----
   document.querySelectorAll('.upload-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const key = btn.getAttribute('data-for');
@@ -437,12 +501,12 @@
     });
   });
 
-  // ---- image inputs ----
   document.querySelectorAll('input[type="file"][accept="image/*"][data-input-for]').forEach(input => {
     input.addEventListener('change', () => {
       const key = input.getAttribute('data-input-for');
       const file = input.files && input.files[0];
       if(!file) return;
+      pendingFiles[key] = file;
       const reader = new FileReader();
       reader.onload = () => {
         const url = reader.result;
@@ -457,23 +521,159 @@
     });
   });
 
-  // ---- video inputs ----
   document.querySelectorAll('input[type="file"][accept="video/*"][data-input-for]').forEach(input => {
     input.addEventListener('change', () => {
       const key = input.getAttribute('data-input-for');
       const file = input.files && input.files[0];
       if(!file) return;
+      pendingFiles[key] = file;
       const url = URL.createObjectURL(file);
       const video = document.getElementById(key);
       const placeholder = document.getElementById(key + 'placeholder');
-      if(video){
-        video.src = url;
-        video.style.display = 'block';
-        video.load();
-      }
+      if(video){ video.src = url; video.style.display = 'block'; video.load(); }
       if(placeholder) placeholder.style.display = 'none';
     });
   });
+
+  // ======================================================
+  // GitHub Laden
+  // ======================================================
+  function rawUrl(path){
+    return "https://raw.githubusercontent.com/" + CONFIG.owner + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + path + "?v=" + Date.now();
+  }
+
+  async function loadContent(){
+    try{
+      const res = await fetch(
+        "https://raw.githubusercontent.com/" + CONFIG.owner + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + CONFIG.contentPath + "?t=" + Date.now()
+      );
+      if(!res.ok) return; // noch keine content.json vorhanden -> Standardinhalte bleiben stehen
+      const data = await res.json();
+
+      if(data.texts){
+        Object.keys(data.texts).forEach(key => {
+          const el = document.querySelector('[data-key="'+key+'"]');
+          if(el) el.innerHTML = data.texts[key];
+        });
+      }
+      if(data.media){
+        currentMedia = data.media;
+        Object.keys(data.media).forEach(key => {
+          const path = data.media[key];
+          const url = rawUrl(path);
+          const video = document.getElementById(key);
+          if(video && video.tagName === 'VIDEO'){
+            video.src = url; video.style.display = 'block';
+            const placeholder = document.getElementById(key + 'placeholder');
+            if(placeholder) placeholder.style.display = 'none';
+          } else if(key === 'heroBg'){
+            document.getElementById('heroSlot').style.backgroundImage = 'url(' + url + ')';
+          } else {
+            const box = document.getElementById(key);
+            if(box) box.style.backgroundImage = 'url(' + url + ')';
+          }
+        });
+      }
+    } catch(e){
+      console.log('Kein gespeicherter Inhalt gefunden oder Ladefehler:', e);
+    }
+  }
+
+  // ======================================================
+  // GitHub Speichern
+  // ======================================================
+  function fileToBase64(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function getSha(path, token){
+    const res = await fetch(
+      "https://api.github.com/repos/" + CONFIG.owner + "/" + CONFIG.repo + "/contents/" + path + "?ref=" + CONFIG.branch,
+      { headers: { 'Authorization':'Bearer ' + token, 'Accept':'application/vnd.github+json' } }
+    );
+    if(res.status === 200){ const d = await res.json(); return d.sha; }
+    return null;
+  }
+
+  async function putFile(path, base64Content, token, message){
+    const sha = await getSha(path, token);
+    const body = { message: message || ('Update ' + path), content: base64Content, branch: CONFIG.branch };
+    if(sha) body.sha = sha;
+    const res = await fetch(
+      "https://api.github.com/repos/" + CONFIG.owner + "/" + CONFIG.repo + "/contents/" + path,
+      {
+        method: 'PUT',
+        headers: { 'Authorization':'Bearer ' + token, 'Accept':'application/vnd.github+json', 'Content-Type':'application/json' },
+        body: JSON.stringify(body)
+      }
+    );
+    if(!res.ok){
+      const err = await res.json().catch(()=>({}));
+      throw new Error(err.message || ('GitHub-Fehler ' + res.status));
+    }
+    return res.json();
+  }
+
+  async function saveAll(){
+    const token = tokenInput.value.trim();
+    if(!token){
+      saveStatus.textContent = 'Bitte GitHub-Token eingeben.';
+      saveStatus.className = 'status err';
+      return;
+    }
+    saveBtn.disabled = true;
+    saveStatus.textContent = 'Speichere …';
+    saveStatus.className = 'status';
+    try{
+      // Texte sammeln
+      const texts = {};
+      document.querySelectorAll('[data-key]').forEach(el => { texts[el.dataset.key] = el.innerHTML.trim(); });
+
+      // Medien: neue Dateien hochladen
+      const media = Object.assign({}, currentMedia);
+      const keys = Object.keys(pendingFiles);
+      for(let i = 0; i < keys.length; i++){
+        const key = keys[i];
+        const file = pendingFiles[key];
+        if(file.size > 20 * 1024 * 1024){
+          throw new Error('Datei für "' + key + '" ist größer als 20MB — bitte kleinere Datei verwenden.');
+        }
+        saveStatus.textContent = 'Lade Datei ' + (i+1) + '/' + keys.length + ' hoch …';
+        const base64 = await fileToBase64(file);
+        const extGuess = (file.name.split('.').pop() || (file.type.startsWith('video') ? 'mp4' : 'jpg')).toLowerCase();
+        const path = 'assets/' + key + '.' + extGuess;
+        await putFile(path, base64, token, 'Update ' + key);
+        media[key] = path;
+      }
+
+      // content.json schreiben
+      saveStatus.textContent = 'Speichere content.json …';
+      const jsonString = JSON.stringify({ texts, media }, null, 2);
+      const jsonBase64 = btoa(unescape(encodeURIComponent(jsonString)));
+      await putFile(CONFIG.contentPath, jsonBase64, token, 'Update content.json');
+
+      currentMedia = media;
+      Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
+
+      saveStatus.textContent = 'Gespeichert ✔ — live in ca. 1 Minute sichtbar.';
+      saveStatus.className = 'status ok';
+    } catch(e){
+      saveStatus.textContent = 'Fehler: ' + e.message;
+      saveStatus.className = 'status err';
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
+  saveBtn.addEventListener('click', saveAll);
+
+  // Inhalte beim Laden der Seite aus GitHub holen (für alle Besucher)
+  loadContent();
 })();
 </script>
 
